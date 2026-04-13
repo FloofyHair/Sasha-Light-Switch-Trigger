@@ -349,6 +349,8 @@
     let userEditing = false;
     let offsetMs = 0;      // server_time - client now
     let cachedState = null;
+    let countdownExpired = false;  // guards against repeated reloads at zero
+    let fastPollTimer = null;      // used when waiting for ESP32 to consume trigger
 
     document.getElementById('alarm-input').addEventListener('focus', () => userEditing = true);
     document.getElementById('alarm-input').addEventListener('blur', () => userEditing = false);
@@ -395,9 +397,24 @@
       btn.classList.add('on');
       try {
         await fetch('/trigger', { method: 'POST' });
+        startFastPoll();
       } catch (e) {
         console.error('Trigger failed', e);
+        btn.disabled = false;
+        btn.classList.remove('on');
       }
+    }
+
+    function startFastPoll() {
+      if (fastPollTimer) return;
+      fastPollTimer = setInterval(async () => {
+        await load();
+        // stop as soon as the ESP32 has consumed the trigger
+        if (cachedState && !cachedState.trigger) {
+          clearInterval(fastPollTimer);
+          fastPollTimer = null;
+        }
+      }, 1500);
     }
 
     function renderTick() {
@@ -407,6 +424,15 @@
 
       const now = Date.now() + offsetMs;
       const remaining = Math.max(0, Math.round((nextFire - now) / 1000));
+
+      // When countdown hits zero the server has already advanced next_fire_iso —
+      // reload immediately so the display snaps to the new time rather than staying at 0.
+      if (remaining === 0 && !countdownExpired) {
+        countdownExpired = true;
+        load();
+      } else if (remaining > 0) {
+        countdownExpired = false;
+      }
 
       document.getElementById('time-left').textContent = formatLeft(remaining);
       document.getElementById('next-time').textContent = new Date(nextFire).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
