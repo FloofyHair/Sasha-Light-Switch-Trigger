@@ -348,6 +348,8 @@
   <script>
     const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     let userEditing = false;
+    let offsetMs = 0;      // server_time - client now
+    let cachedState = null;
 
     document.getElementById('alarm-input').addEventListener('focus', () => userEditing = true);
     document.getElementById('alarm-input').addEventListener('blur', () => userEditing = false);
@@ -399,23 +401,35 @@
       }
     }
 
+    function renderTick() {
+      if (!cachedState) return;
+      const nextFire = cachedState.next_fire_iso ? Date.parse(cachedState.next_fire_iso) : null;
+      if (!nextFire) return;
+
+      const now = Date.now() + offsetMs;
+      const remaining = Math.max(0, Math.round((nextFire - now) / 1000));
+
+      document.getElementById('time-left').textContent = formatLeft(remaining);
+      document.getElementById('next-time').textContent = new Date(nextFire).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      // assume daily cadence; fill grows as time passes
+      const pct = 1 - Math.min(Math.max(remaining / 86400, 0), 1);
+      document.getElementById('progress-fill').style.width = (pct * 100) + '%';
+    }
+
     async function load() {
       try {
         const res = await fetch('/api/state');
         const data = await res.json();
+        cachedState = data;
+
+        if (data.server_time) {
+          offsetMs = Date.parse(data.server_time) - Date.now();
+        }
 
         if (!userEditing) {
           document.getElementById('alarm-input').value = data.alarm_time;
         }
-
-        const nt = data.next_fire_iso
-          ? new Date(data.next_fire_iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          : '--:--';
-        document.getElementById('next-time').textContent = nt;
-        document.getElementById('time-left').textContent = formatLeft(data.seconds_left);
-
-        const pct = Math.min(Math.max(data.ring_progress || 0, 0), 1);
-        document.getElementById('progress-fill').style.width = (pct * 100) + '%';
 
         const btn = document.getElementById('manual-btn');
         btn.disabled = !!data.trigger;
@@ -428,8 +442,17 @@
         if (data.series?.labels && data.series?.counts) {
           buildChart(data.series.labels, data.series.counts);
         }
+
+        renderTick();
       } catch (e) {
-        console.error('Load failed', e);
+        console.error('Load failed; falling back to local clock', e);
+        // fallback: keep ticking with local time and last known state
+        offsetMs = 0;
+        if (!cachedState) {
+          document.getElementById('time-left').textContent = 'offline';
+          return;
+        }
+        renderTick();
       }
     }
 
@@ -437,7 +460,8 @@
     buildChart(DAYS, [2, 5, 1, 4, 3, 6, 2]);
 
     load();
-    setInterval(load, 2000);
+    setInterval(load, 15000);   // resync every 15s
+    setInterval(renderTick, 1000); // tick locally using offset
   </script>
 </body>
 </html>
