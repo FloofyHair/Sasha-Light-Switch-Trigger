@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+    <head>
+        <title>Device Control</title>
+        <style>
+            body {
+                font-family: Arial;
+                text-align: center;
+                margin-top: 100px;
+                background: #111;
+                color: white;
+            }
+            button {
+                font-size: 24px;
+                padding: 20px 40px;
+                margin: 20px;
+                cursor: pointer;
+                border-radius: 10px;
+                border: none;
+                background: #4caf50;
+                color: white;
+            }
+            button:hover {
+                background: #45a049;
+            }
+            #status {
+                margin-top: 20px;
+                font-size: 18px;
+            }
+            #status {
+                margin-top: 30px;
+                font-size: 40px;
+                font-weight: bold;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Device Controller</h1>
+
+        <button onclick="trigger()">Trigger</button>
+
+        <div id="status">Ready</div>
+
+        <script>
+            async function trigger() {
+                document.getElementById("status").innerText = "Sending...";
+                document.getElementById("status").style.color = "white";
+
+                await fetch("/trigger", { method: "POST" });
+            }
+
+            // 🔄 poll server every second
+            async function updateStatus() {
+                try {
+                    const res = await fetch("/status");
+                    const data = await res.json();
+
+                    const statusEl = document.getElementById("status");
+
+                    if (data.trigger) {
+                        statusEl.innerText = "TRUE";
+                        statusEl.style.color = "limegreen";
+                    } else {
+                        statusEl.innerText = "FALSE";
+                        statusEl.style.color = "red";
+                    }
+                } catch {
+                    document.getElementById("status").innerText = "Error";
+                    document.getElementById("status").style.color = "orange";
+                }
+            }
+
+            // run every 1s
+            setInterval(updateStatus, 1000);
+            updateStatus();
+        </script>
+    </body>
+</html>
