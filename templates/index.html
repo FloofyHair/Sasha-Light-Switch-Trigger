@@ -1,78 +1,443 @@
 <!doctype html>
-<html>
-    <head>
-        <title>Device Control</title>
-        <style>
-            body {
-                font-family: Arial;
-                text-align: center;
-                margin-top: 100px;
-                background: #111;
-                color: white;
-            }
-            button {
-                font-size: 24px;
-                padding: 20px 40px;
-                margin: 20px;
-                cursor: pointer;
-                border-radius: 10px;
-                border: none;
-                background: #4caf50;
-                color: white;
-            }
-            button:hover {
-                background: #45a049;
-            }
-            #status {
-                margin-top: 20px;
-                font-size: 18px;
-            }
-            #status {
-                margin-top: 30px;
-                font-size: 40px;
-                font-weight: bold;
-            }
-        </style>
-    </head>
-    <body>
-        <h1>Device Controller</h1>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Light Switch Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        <button onclick="trigger()">Trigger</button>
+    :root {
+      --bg: #f5f4f1;
+      --surface: #ffffff;
+      --border: rgba(0,0,0,0.08);
+      --border-mid: rgba(0,0,0,0.14);
+      --text: #1a1a18;
+      --muted: #888883;
+      --faint: #b8b8b3;
+      --radius-card: 20px;
+      --radius-md: 10px;
+      --radius-sm: 7px;
+    }
 
-        <div id="status">Ready</div>
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #131312;
+        --surface: #1e1e1c;
+        --border: rgba(255,255,255,0.07);
+        --border-mid: rgba(255,255,255,0.13);
+        --text: #e8e8e4;
+        --muted: #7a7a75;
+        --faint: #3d3d3a;
+      }
+    }
 
-        <script>
-            async function trigger() {
-                document.getElementById("status").innerText = "Sending...";
-                document.getElementById("status").style.color = "white";
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "DM Sans", system-ui, sans-serif;
+      display: flex;
+      justify-content: center;
+      padding: 28px 16px 56px;
+    }
 
-                await fetch("/trigger", { method: "POST" });
-            }
+    .wrap {
+      width: 100%;
+      max-width: 520px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
 
-            // 🔄 poll server every second
-            async function updateStatus() {
-                try {
-                    const res = await fetch("/status");
-                    const data = await res.json();
+    .card {
+      background: var(--surface);
+      border: 0.5px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 1.25rem 1.5rem;
+    }
 
-                    const statusEl = document.getElementById("status");
+    .card-title {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      margin-bottom: 1rem;
+    }
 
-                    if (data.trigger) {
-                        statusEl.innerText = "TRUE";
-                        statusEl.style.color = "limegreen";
-                    } else {
-                        statusEl.innerText = "FALSE";
-                        statusEl.style.color = "red";
-                    }
-                } catch {
-                    document.getElementById("status").innerText = "Error";
-                    document.getElementById("status").style.color = "orange";
-                }
-            }
+    /* --- Alarm card --- */
+    .alarm-display {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
 
-            // run every 1s
-            setInterval(updateStatus, 1000);
-            updateStatus();
-        </script>
-    </body>
+    .time-big {
+      font-size: 52px;
+      font-weight: 500;
+      color: var(--text);
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+
+    .countdown-wrap { text-align: right; }
+
+    .countdown-label {
+      font-size: 11px;
+      color: var(--faint);
+      margin-bottom: 3px;
+    }
+
+    .countdown-val {
+      font-size: 22px;
+      font-weight: 500;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      padding: 4px 10px;
+      border-radius: 99px;
+      border: 0.5px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--faint);
+    }
+    .dot.active { background: #4caf50; }
+
+    .progress-track {
+      width: 100%;
+      height: 3px;
+      background: var(--border);
+      border-radius: 99px;
+      margin: 1rem 0 0.875rem;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: 99px;
+      background: var(--muted);
+      width: 72%;
+      transition: width 1s linear;
+    }
+
+    .alarm-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    input[type="time"] {
+      flex: 1;
+      font-size: 15px;
+      font-family: inherit;
+      padding: 9px 12px;
+      border-radius: var(--radius-sm);
+      border: 0.5px solid var(--border-mid);
+      background: var(--bg);
+      color: var(--text);
+      outline: none;
+    }
+
+    input[type="time"]:focus {
+      border-color: var(--muted);
+    }
+
+    .btn {
+      padding: 9px 18px;
+      border-radius: var(--radius-sm);
+      border: 0.5px solid var(--border-mid);
+      background: transparent;
+      color: var(--text);
+      font-size: 14px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 100ms ease;
+    }
+
+    .btn:hover { background: var(--bg); }
+    .btn:active { transform: scale(0.97); }
+
+    /* --- Trigger card --- */
+    .trigger-card {
+      background: var(--surface);
+      border: 0.5px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 2.25rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .trigger-hint {
+      font-size: 12px;
+      color: var(--faint);
+    }
+
+    .big-btn {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      border: 0.5px solid var(--border-mid);
+      background: var(--bg);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 120ms ease, transform 120ms ease, border-color 120ms ease;
+    }
+
+    .big-btn:hover { border-color: var(--muted); }
+    .big-btn:active { transform: scale(0.94); }
+    .big-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+    .big-btn.on {
+      background: #e8f5e9;
+      border-color: #a5d6a7;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .big-btn.on {
+        background: #1b2e1c;
+        border-color: #4caf50;
+      }
+    }
+
+    .power-icon {
+      width: 32px;
+      height: 32px;
+      color: var(--muted);
+      transition: color 120ms ease;
+    }
+
+    .big-btn.on .power-icon { color: #4caf50; }
+
+    /* --- Stats card --- */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 1.125rem;
+    }
+
+    .stat {
+      background: var(--bg);
+      border-radius: var(--radius-md);
+      padding: 0.75rem;
+      text-align: center;
+    }
+
+    .stat .val {
+      font-size: 28px;
+      font-weight: 500;
+      color: var(--text);
+      line-height: 1;
+      letter-spacing: -0.02em;
+    }
+
+    .stat .lbl {
+      font-size: 11px;
+      color: var(--faint);
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .chart-bars {
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+      height: 72px;
+    }
+
+    .bar-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      height: 100%;
+      justify-content: flex-end;
+    }
+
+    .bar {
+      width: 100%;
+      border-radius: 4px 4px 2px 2px;
+      background: var(--border);
+      min-height: 4px;
+      transition: height 0.4s ease;
+    }
+
+    .bar.today { background: var(--muted); }
+
+    .bar-label {
+      font-size: 10px;
+      color: var(--faint);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <div class="card">
+      <div class="card-title">Daily schedule</div>
+      <div class="alarm-display">
+        <div>
+          <div class="time-big" id="next-time">07:00</div>
+          <div>
+            <span class="status-pill">
+              <span class="dot active" id="alarm-dot"></span>
+              <span id="alarm-label">scheduled for tomorrow</span>
+            </span>
+          </div>
+        </div>
+        <div class="countdown-wrap">
+          <div class="countdown-label">fires in</div>
+          <div class="countdown-val" id="time-left">--</div>
+        </div>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+      <div class="alarm-row">
+        <input type="time" id="alarm-input" value="07:00">
+        <button class="btn" onclick="saveAlarm()">Save</button>
+      </div>
+    </div>
+
+    <div class="trigger-card">
+      <div class="trigger-hint">Tap to trigger now</div>
+      <button class="big-btn" id="manual-btn" onclick="manualTrigger()" aria-label="Trigger switch">
+        <svg class="power-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2v6"/>
+          <path d="M6.3 6.3a8 8 0 1 0 11.4 0"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Activity</div>
+      <div class="stats-row">
+        <div class="stat"><div class="val" id="c24">--</div><div class="lbl">today</div></div>
+        <div class="stat"><div class="val" id="c7">--</div><div class="lbl">this week</div></div>
+        <div class="stat"><div class="val" id="c30">--</div><div class="lbl">this month</div></div>
+      </div>
+      <div class="chart-bars" id="chart-bars"></div>
+    </div>
+
+  </div>
+
+  <script>
+    const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    let userEditing = false;
+
+    document.getElementById('alarm-input').addEventListener('focus', () => userEditing = true);
+    document.getElementById('alarm-input').addEventListener('blur', () => userEditing = false);
+
+    function formatLeft(seconds) {
+      if (seconds == null || isNaN(seconds)) return '--';
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      if (h > 0) return h + 'h ' + m + 'm';
+      return m + 'm ' + (seconds % 60) + 's';
+    }
+
+    function buildChart(labels, counts) {
+      const wrap = document.getElementById('chart-bars');
+      const max = Math.max(...counts, 1);
+      const today = new Date().getDay();
+      wrap.innerHTML = labels.map((d, i) => {
+        const h = Math.round((counts[i] / max) * 100);
+        const isToday = DAYS[today] === d;
+        return '<div class="bar-col">'
+          + '<div class="bar' + (isToday ? ' today' : '') + '" style="height:' + h + '%"></div>'
+          + '<div class="bar-label">' + d + '</div>'
+          + '</div>';
+      }).join('');
+    }
+
+    async function saveAlarm() {
+      const time = document.getElementById('alarm-input').value;
+      try {
+        await fetch('/api/alarm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ time })
+        });
+        load();
+      } catch (e) {
+        console.error('Save failed', e);
+      }
+    }
+
+    async function manualTrigger() {
+      const btn = document.getElementById('manual-btn');
+      btn.disabled = true;
+      btn.classList.add('on');
+      try {
+        await fetch('/trigger', { method: 'POST' });
+      } catch (e) {
+        console.error('Trigger failed', e);
+      }
+    }
+
+    async function load() {
+      try {
+        const res = await fetch('/api/state');
+        const data = await res.json();
+
+        if (!userEditing) {
+          document.getElementById('alarm-input').value = data.alarm_time;
+        }
+
+        const nt = data.next_fire_iso
+          ? new Date(data.next_fire_iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : '--:--';
+        document.getElementById('next-time').textContent = nt;
+        document.getElementById('time-left').textContent = formatLeft(data.seconds_left);
+
+        const pct = Math.min(Math.max(data.ring_progress || 0, 0), 1);
+        document.getElementById('progress-fill').style.width = (pct * 100) + '%';
+
+        const btn = document.getElementById('manual-btn');
+        btn.disabled = !!data.trigger;
+        btn.classList.toggle('on', !!data.trigger);
+
+        document.getElementById('c24').textContent = data.counts?.['24h'] ?? '--';
+        document.getElementById('c7').textContent = data.counts?.['7d'] ?? '--';
+        document.getElementById('c30').textContent = data.counts?.['30d'] ?? '--';
+
+        if (data.series?.labels && data.series?.counts) {
+          buildChart(data.series.labels, data.series.counts);
+        }
+      } catch (e) {
+        console.error('Load failed', e);
+      }
+    }
+
+    // Build a placeholder chart on first load
+    buildChart(DAYS, [2, 5, 1, 4, 3, 6, 2]);
+
+    load();
+    setInterval(load, 2000);
+  </script>
+</body>
 </html>
