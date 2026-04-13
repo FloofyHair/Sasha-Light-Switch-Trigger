@@ -429,7 +429,12 @@
       // reload immediately so the display snaps to the new time rather than staying at 0.
       if (remaining === 0 && !countdownExpired) {
         countdownExpired = true;
-        load();
+        load().then(ok => {
+          if (!ok) {
+            // Server failed — allow a retry on the next tick after 3s
+            setTimeout(() => { countdownExpired = false; }, 3000);
+          }
+        });
       } else if (remaining > 0) {
         countdownExpired = false;
       }
@@ -450,6 +455,7 @@
     async function load() {
       try {
         const res = await fetch('/api/state');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         cachedState = data;
 
@@ -474,15 +480,17 @@
         }
 
         renderTick();
+        return true;
       } catch (e) {
-        console.error('Load failed; falling back to local clock', e);
+        console.error('Load failed', e);
         // fallback: keep ticking with local time and last known state
         offsetMs = 0;
         if (!cachedState) {
           document.getElementById('time-left').textContent = 'offline';
-          return;
+        } else {
+          renderTick();
         }
-        renderTick();
+        return false;
       }
     }
 
