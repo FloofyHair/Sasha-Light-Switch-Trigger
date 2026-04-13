@@ -2,8 +2,17 @@
 #include <HTTPClient.h>
 #include <time.h>
 
-const char* ssid = "MIT";
-const char* password = "5f3mDd]R{T";
+#include "credentials.h"  // must define WIFI_SSID and WIFI_PASS
+
+#ifndef WIFI_SSID
+#error "WIFI_SSID is not defined. Copy credentials.example.h to credentials.h and fill in your SSID."
+#endif
+#ifndef WIFI_PASS
+#error "WIFI_PASS is not defined. Copy credentials.example.h to credentials.h and fill in your password."
+#endif
+
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASS;
 
 const char* url = "https://sasha-light-switch-trigger.onrender.com/check";
 
