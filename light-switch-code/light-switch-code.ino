@@ -5,39 +5,45 @@
 #include "credentials.h"  // must define WIFI_SSID and WIFI_PASS
 
 #ifndef WIFI_SSID
-#error "WIFI_SSID is not defined. Copy credentials.example.h to credentials.h and fill in your SSID."
+#error "WIFI_SSID not defined — copy credentials.example.h to credentials.h and fill it in."
 #endif
 #ifndef WIFI_PASS
-#error "WIFI_PASS is not defined. Copy credentials.example.h to credentials.h and fill in your password."
+#error "WIFI_PASS not defined — copy credentials.example.h to credentials.h and fill it in."
 #endif
 
-const char* ssid = WIFI_SSID;
+// ── Configuration ─────────────────────────────────────────────────────────────
+const char* CHECKIN_URL = "https://sasha-light-switch-trigger.onrender.com/checkin";
+const int   OUTPUT_PIN  = 10;
+const char* TZ_INFO     = "EST5EDT,M3.2.0/2,M11.1.0/2";
+
+// How often the device checks in with the server (reports state / receives commands)
+const unsigned long CHECKIN_INTERVAL_MS = 10UL * 1000UL;   // 10 seconds
+// ──────────────────────────────────────────────────────────────────────────────
+
+const char* ssid     = WIFI_SSID;
 const char* password = WIFI_PASS;
 
-// REST endpoints served by the Flask app (see app.py)
-const char* url_check   = "https://sasha-light-switch-trigger.onrender.com/check";   // GET -> {"trigger": bool}, resets flag when true
-const char* url_state   = "https://sasha-light-switch-trigger.onrender.com/api/state"; // GET -> includes alarm_time
+// Local alarm — device is the source of truth for when to fire
+int  alarmHour    = 7;
+int  alarmMinute  = 0;
+bool firedToday   = false;
+int  lastFireYDay = -1;
 
-// Pick your output pin
-const int pin = 10;   // safer than GPIO 10 on most ESP32 boards
+// Trigger telemetry reported to server on each check-in
+int    triggerCount   = 0;
+String lastTriggerISO = "";
 
-// Local alarm fallback (24h)
-int alarmHour = 7;
-int alarmMinute = 0;
-bool firedToday = false;
-const char* tzInfo = "EST5EDT,M3.2.0/2,M11.1.0/2";
-int lastFireYDay = -1;
+unsigned long lastCheckinMs = 0;
 
-unsigned long lastStateFetchMs = 0;
-const unsigned long STATE_FETCH_INTERVAL_MS = 60UL * 1000UL;
 
-// Fallback for boards missing Arduino's getLocalTime helper
-bool getLocalTimeSafe(struct tm* info, uint32_t ms = 5000) {
+// ── Time helpers ──────────────────────────────────────────────────────────────
+
+bool getLocalTimeSafe(struct tm* info, uint32_t timeoutMs = 5000) {
   time_t now;
   uint32_t start = millis();
-  while ((millis() - start) <= ms) {
+  while ((millis() - start) <= timeoutMs) {
     time(&now);
-    if (now > 1600000000) { // after 2020 -> time is valid
+    if (now > 1700000000UL) {   // after ~Nov 2023 — NTP has synced
       localtime_r(&now, info);
       return true;
     }
@@ -48,166 +54,171 @@ bool getLocalTimeSafe(struct tm* info, uint32_t ms = 5000) {
 
 void setupTime() {
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  setenv("TZ", tzInfo, 1);
+  setenv("TZ", TZ_INFO, 1);
   tzset();
-
-  Serial.print("Waiting for time");
-  struct tm timeinfo;
-  while (!getLocalTimeSafe(&timeinfo)) {
+  Serial.print("Syncing time");
+  struct tm t;
+  while (!getLocalTimeSafe(&t)) {
     Serial.print(".");
     delay(500);
   }
-  Serial.println();
-  Serial.println("Time synced");
+  char buf[32];
+  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &t);
+  Serial.printf("\nTime synced: %s\n", buf);
 }
 
-bool parseAlarm(const String& alarmStr) {
-  int h, m;
-  if (sscanf(alarmStr.c_str(), "%d:%d", &h, &m) == 2) {
-    if (h >= 0 && h < 24 && m >= 0 && m < 60) {
-      alarmHour = h;
-      alarmMinute = m;
-      return true;
-    }
-  }
-  return false;
-}
 
-void pulseOutput() {
-  Serial.println("Trigger HIGH");
-  digitalWrite(pin, HIGH);
-  delay(1000);
-  digitalWrite(pin, LOW);
-}
+// ── WiFi ──────────────────────────────────────────────────────────────────────
 
 void ensureWifi() {
   if (WiFi.status() == WL_CONNECTED) return;
-
   WiFi.disconnect();
   WiFi.begin(ssid, password);
   Serial.print("Reconnecting WiFi");
-  int tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 30) {
+  for (int i = 0; i < 30 && WiFi.status() != WL_CONNECTED; i++) {
     delay(500);
     Serial.print(".");
-    tries++;
   }
   Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("Reconnected. IP: ");
-    Serial.println(WiFi.localIP());
-  } else {
+  if (WiFi.status() == WL_CONNECTED)
+    Serial.printf("Reconnected. IP: %s\n", WiFi.localIP().toString().c_str());
+  else
     Serial.println("WiFi reconnect failed");
-  }
 }
 
-bool checkHttpTrigger() {
-  ensureWifi();
-  if (WiFi.status() != WL_CONNECTED) return false;
 
-  HTTPClient http;
-  http.begin(url_check);
+// ── Output ────────────────────────────────────────────────────────────────────
 
-  int httpCode = http.GET();
+void pulseOutput() {
+  Serial.println("Trigger HIGH");
+  digitalWrite(OUTPUT_PIN, HIGH);
+  delay(1000);
+  digitalWrite(OUTPUT_PIN, LOW);
 
-  if (httpCode > 0) {
-    String payload = http.getString();
-    Serial.printf("HTTP %d: %s\n", httpCode, payload.c_str());
-
-    if (payload.indexOf("\"trigger\":true") != -1) {
-      pulseOutput();
-    }
-    http.end();
-    return true;
-  } else {
-    Serial.print("HTTP error: ");
-    Serial.println(httpCode);
+  triggerCount++;
+  struct tm t;
+  if (getLocalTimeSafe(&t, 100)) {
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &t);
+    lastTriggerISO = String(buf);
   }
-
-  http.end();
-  return false;
+  Serial.printf("Total triggers: %d\n", triggerCount);
 }
 
-bool fetchAlarmFromServer() {
-  ensureWifi();
-  if (WiFi.status() != WL_CONNECTED) return false;
 
-  HTTPClient http;
-  http.begin(url_state);
-  int httpCode = http.GET();
-  if (httpCode <= 0) {
-    http.end();
-    return false;
-  }
-  String payload = http.getString();
-  http.end();
+// ── Local alarm ───────────────────────────────────────────────────────────────
 
-  int idx = payload.indexOf("\"alarm_time\":\"");
-  if (idx == -1) return false;
-  idx += 14;
-  int end = payload.indexOf("\"", idx);
-  if (end == -1) return false;
-
-  String alarmStr = payload.substring(idx, end);
-  if (parseAlarm(alarmStr)) {
-    Serial.print("Updated alarm from server: ");
-    Serial.println(alarmStr);
+bool parseAlarm(const String& s) {
+  int h, m;
+  if (sscanf(s.c_str(), "%d:%d", &h, &m) == 2 && h >= 0 && h < 24 && m >= 0 && m < 60) {
+    alarmHour   = h;
+    alarmMinute = m;
     return true;
   }
   return false;
 }
 
 void checkLocalAlarm() {
-  struct tm timeinfo;
-  if (!getLocalTimeSafe(&timeinfo, 100)) return;  // short timeout — don't block the loop
+  struct tm t;
+  if (!getLocalTimeSafe(&t, 100)) return;   // short timeout — don't block the loop
 
-  // reset daily flag when date changes
-  if (lastFireYDay != timeinfo.tm_yday) {
-    firedToday = false;
+  if (lastFireYDay != t.tm_yday) {
+    firedToday   = false;       // new day: reset
+    lastFireYDay = t.tm_yday;
   }
 
-  if (timeinfo.tm_hour == alarmHour && timeinfo.tm_min == alarmMinute && timeinfo.tm_sec <= 2) {
-    if (!firedToday) {
-      Serial.println("Local alarm fired");
-      pulseOutput();
-      firedToday = true;
-      lastFireYDay = timeinfo.tm_yday;
-    }
+  if (!firedToday && t.tm_hour == alarmHour && t.tm_min == alarmMinute && t.tm_sec <= 2) {
+    Serial.println("Local alarm fired");
+    firedToday = true;
+    pulseOutput();
   }
 }
+
+
+// ── Server check-in ───────────────────────────────────────────────────────────
+
+void doCheckin() {
+  ensureWifi();
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  // Build JSON payload with current device state
+  char alarmStr[6];
+  sprintf(alarmStr, "%02d:%02d", alarmHour, alarmMinute);
+
+  String body = "{\"alarm_time\":\"";
+  body += alarmStr;
+  body += "\",\"trigger_count\":";
+  body += triggerCount;
+  if (lastTriggerISO.length() > 0) {
+    body += ",\"last_trigger_iso\":\"";
+    body += lastTriggerISO;
+    body += "\"";
+  }
+  body += "}";
+
+  HTTPClient http;
+  http.begin(CHECKIN_URL);
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST(body);
+
+  if (code > 0) {
+    String resp = http.getString();
+    Serial.printf("Checkin %d: %s\n", code, resp.c_str());
+
+    // Apply alarm update if the user changed it on the web UI
+    int idx = resp.indexOf("\"alarm\":\"");
+    if (idx != -1) {
+      idx += 9;
+      int end = resp.indexOf("\"", idx);
+      if (end != -1) {
+        String newAlarm = resp.substring(idx, end);
+        if (parseAlarm(newAlarm)) {
+          firedToday = false;   // don't skip the new time if it's already passed today
+          Serial.printf("Alarm updated by server: %s\n", newAlarm.c_str());
+        }
+      }
+    }
+
+    // Execute manual trigger requested from the web UI
+    if (resp.indexOf("\"trigger\":true") != -1) {
+      Serial.println("Manual trigger from server");
+      pulseOutput();
+    }
+  } else {
+    Serial.printf("Checkin failed: %d\n", code);
+  }
+
+  http.end();
+}
+
+
+// ── Setup / loop ──────────────────────────────────────────────────────────────
 
 void setup() {
   Serial.begin(115200);
 
-  pinMode(pin, OUTPUT);
-  digitalWrite(pin, LOW);
+  pinMode(OUTPUT_PIN, OUTPUT);
+  digitalWrite(OUTPUT_PIN, LOW);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-
-  Serial.println();
-  Serial.println("Connected");
-  Serial.println(WiFi.localIP());
+  Serial.printf("\nConnected. IP: %s\n", WiFi.localIP().toString().c_str());
 
   setupTime();
 }
 
 void loop() {
-  checkHttpTrigger(); // remote trigger if server reachable
-
-  unsigned long nowMs = millis();
-  if (nowMs - lastStateFetchMs > STATE_FETCH_INTERVAL_MS) {
-    lastStateFetchMs = nowMs;  // reset timer regardless of success to avoid retry spam
-    fetchAlarmFromServer();
+  unsigned long now = millis();
+  if (now - lastCheckinMs >= CHECKIN_INTERVAL_MS) {
+    lastCheckinMs = now;
+    doCheckin();
   }
 
-  checkLocalAlarm(); // always check local schedule
-
-  delay(1000);
+  checkLocalAlarm();
+  delay(200);
 }
