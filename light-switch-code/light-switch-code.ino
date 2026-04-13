@@ -114,8 +114,7 @@ bool checkHttpTrigger() {
     String payload = http.getString();
     Serial.printf("HTTP %d: %s\n", httpCode, payload.c_str());
 
-    // naive JSON check for `"trigger":true`
-    if (payload.indexOf("\"trigger\":true") != -1 || payload.indexOf("true") != -1) {
+    if (payload.indexOf("\"trigger\":true") != -1) {
       pulseOutput();
     }
     http.end();
@@ -160,7 +159,7 @@ bool fetchAlarmFromServer() {
 
 void checkLocalAlarm() {
   struct tm timeinfo;
-  if (!getLocalTimeSafe(&timeinfo)) return;
+  if (!getLocalTimeSafe(&timeinfo, 100)) return;  // short timeout — don't block the loop
 
   // reset daily flag when date changes
   if (lastFireYDay != timeinfo.tm_yday) {
@@ -204,9 +203,8 @@ void loop() {
 
   unsigned long nowMs = millis();
   if (nowMs - lastStateFetchMs > STATE_FETCH_INTERVAL_MS) {
-    if (fetchAlarmFromServer()) {
-      lastStateFetchMs = nowMs;
-    }
+    lastStateFetchMs = nowMs;  // reset timer regardless of success to avoid retry spam
+    fetchAlarmFromServer();
   }
 
   checkLocalAlarm(); // always check local schedule

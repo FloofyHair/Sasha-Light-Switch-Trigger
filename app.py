@@ -37,9 +37,17 @@ def _prev_alarm_reference(now: datetime) -> datetime:
     return candidate
 
 
+def _prune_events() -> None:
+    """Drop events older than 30 days. Must be called with state_lock held."""
+    cutoff = datetime.now(tz) - timedelta(days=30)
+    while events and events[0]["ts"] < cutoff:
+        events.pop(0)
+
+
 def _log_event(kind: str) -> None:
     with state_lock:
         events.append({"ts": datetime.now(tz), "kind": kind})
+        _prune_events()
 
 
 def _count_since(delta: timedelta) -> int:
@@ -75,6 +83,7 @@ def _scheduler_loop():
             if next_alarm_at and now >= next_alarm_at:
                 trigger_flag = True
                 events.append({"ts": now, "kind": "alarm"})
+                _prune_events()
                 next_alarm_at = _compute_next_alarm(now + timedelta(seconds=1))
         time_module.sleep(1)
 
@@ -113,7 +122,7 @@ def api_state():
             "alarm_time": alarm_time_str,
             "next_fire_iso": next_fire.isoformat() if next_fire else None,
             "seconds_left": seconds_left,
-            "ring_progress": progress,  # 0.0 -> full, 1.0 -> empty
+            "ring_progress": progress,  # 0.0 -> just fired, 1.0 -> about to fire
             "counts": {
                 "24h": _count_since(timedelta(hours=24)),
                 "7d": _count_since(timedelta(days=7)),
